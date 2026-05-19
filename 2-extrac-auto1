@@ -1,0 +1,109 @@
+#!/bin/bash
+set -euo pipefail
+
+########################################
+# 需要修改的变量
+########################################
+
+SPECIES="Ammospiza_maritima"
+REF_ID="GCA_013396375.1_ASM1339637v1"
+
+REF_DIR="/raid6/bird/hp/ljr/${SPECIES}/01reference"
+BWA_PREFIX="Ama"
+
+REF_FA="${REF_DIR}/${REF_ID}_genomic.fna"
+
+########################################
+# 进入参考基因组目录
+########################################
+
+cd "${REF_DIR}"
+
+########################################
+# 检查参考基因组是否存在
+########################################
+
+if [[ ! -s "${REF_FA}" ]]; then
+    echo "ERROR: Reference genome not found: ${REF_FA}"
+    exit 1
+fi
+
+########################################
+# 提取所有序列名称
+########################################
+
+echo "Extracting all sequence names..."
+
+grep '^>' "${REF_FA}" > all.headers.txt
+
+awk '{print $1}' all.headers.txt | sed 's/^>//' > all.seq.ids.txt
+
+echo "All sequence names saved to:"
+echo "${REF_DIR}/all.headers.txt"
+echo "${REF_DIR}/all.seq.ids.txt"
+
+########################################
+# 自动尝试删除 Z、W、MT、mitochondrial 等序列
+# 注意：不同 NCBI header 格式可能不完全一致，因此后面仍建议人工检查
+########################################
+
+echo "Generating candidate autosome list..."
+
+awk '
+BEGIN {IGNORECASE=1}
+{
+    line=$0
+    id=$1
+    sub(/^>/, "", id)
+
+    if (
+        line !~ /chromosome Z/ &&
+        line !~ /chromosome W/ &&
+        line !~ /chromosome MT/ &&
+        line !~ /chromosome M/ &&
+        line !~ /mitochondrion/ &&
+        line !~ /mitochondrial/
+    ) {
+        print id
+    }
+}
+' all.headers.txt > auto.ids.txt
+
+echo "Candidate autosome IDs saved to auto.ids.txt"
+echo "Please manually check auto.ids.txt before continuing."
+echo "If needed, remove sex chromosomes, mitochondria, unplaced scaffolds, or other unwanted sequences."
+
+########################################
+# 提取常染色体序列
+########################################
+
+echo "Extracting autosomal sequences..."
+
+seqtk subseq "${REF_FA}" auto.ids.txt > auto.fna
+
+########################################
+# 检查常染色体文件
+########################################
+
+echo "Autosome FASTA statistics:"
+seqkit stats auto.fna || true
+
+########################################
+# 建立索引
+########################################
+
+echo "Building BWA-MEM2 index..."
+
+bwa-mem2 index -p "${BWA_PREFIX}" auto.fna
+
+echo "Building samtools faidx..."
+
+samtools faidx auto.fna
+
+echo "Building GATK sequence dictionary..."
+
+gatk CreateSequenceDictionary \
+    -R auto.fna \
+    -O auto.dict
+
+echo "Done."

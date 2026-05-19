@@ -1,0 +1,206 @@
+#!/bin/bash
+set -euo pipefail
+
+########################################
+# 需要修改的变量
+########################################
+
+SPECIES="Ammospiza_maritima"
+SAMPLE="SRR9946437"
+
+REF_DIR="/raid6/bird/hp/ljr/${SPECIES}/01reference"
+WORK_DIR="/raid6/bird/hp/ljr/${SPECIES}/02resequencing/${SAMPLE}"
+
+BWA_PREFIX="Ama"
+THREADS=6
+
+REF_PREFIX="${REF_DIR}/${BWA_PREFIX}"
+REF_FA="${REF_DIR}/auto.fna"
+
+########################################
+# 创建工作目录
+########################################
+
+mkdir -p "${WORK_DIR}"
+cd "${WORK_DIR}"
+
+########################################
+# 检查参考基因组和索引
+########################################
+
+if [[ ! -s "${REF_FA}" ]]; then
+    echo "ERROR: auto.fna not found: ${REF_FA}"
+    exit 1
+fi
+
+if [[ ! -s "${REF_FA}.fai" ]]; then
+    echo "ERROR: auto.fna.fai not found. Please run samtools faidx first."
+    exit 1
+fi
+
+if [[ ! -s "${REF_DIR}/auto.dict" ]]; then
+    echo "ERROR: auto.dict not found. Please run GATK CreateSequenceDictionary first."
+    exit 1
+fi
+
+########################################
+# 下载 SRA 数据
+########################################
+
+echo "Downloading SRA data..."
+
+prefetch "${SAMPLE}" --max-size 200G
+
+########################################
+# 转换为 FASTQ
+########################################
+
+echo "Converting SRA to FASTQ..."
+
+fastq-dump "./${SAMPLE}/${SAMPLE}.sra" \
+    --split-3 \
+    --gzip \
+    --defline-qual '+' \
+    -O ./
+
+########################################
+# 修复双端 reads 配对关系
+########################################
+
+echo "Repairing paired-end reads..."
+
+repair.sh \
+    in="${SAMPLE}_1.fastq.gz" \
+    in2="${SAMPLE}_2.fastq.gz" \
+    out="${SAMPLE}_1.re.fastq.gz" \
+    out2="${SAMPLE}_2.re.fastq.gz" \
+    overwrite=t
+
+########################################
+# Trim Galore 质控
+########################################
+
+echo "Running Trim Galore..."
+
+trim_galore \
+    --paired \
+    --three_prime_clip_R1 5 \
+    --three_prime_clip_R2 5 \
+    --clip_R1 5 \
+    --clip_R2 5 \
+    --fastqc \
+    --gzip \
+    --output_dir ./ \
+    --stringency 1 \
+    -e 0.1 \
+    "${SAMPLE}_1.re.fastq.gz" \
+    "${SAMPLE}_2.re.fastq.gz"
+
+########################################
+# 自动识别 Trim Galore 输出文件
+########################################
+
+R1_TRIM=$(ls "${SAMPLE}"*_1.re_val_1.fq.gz | head -n 1)
+R2_TRIM=$(ls "${SAMPLE}"*_2.re_val_2.fq.gz | head -n 1)
+
+echo "Trimmed R1: ${R1_TRIM}"
+echo "Trimmed R2: ${R2_TRIM}"
+
+########################################
+# BWA-MEM2 比对
+########################################
+
+echo "Mapping reads with BWA-MEM2..."
+
+bwa-mem2 mem \
+    -t "${THREADS}" \
+    -M \
+    -R "@RG\tID:${SAMPLE}\tSM:${SAMPLE}\tLB:WGS\tPL:Illumina" \
+    "${REF_PREFIX}" \
+    "${R1_TRIM}" \
+    "${R2_TRIM}" \
+    > "${SAMPLE}.bwa.sam"
+
+########################################
+# SAM 排序为 BAM
+########################################
+
+echo "Sorting BAM..."
+
+gatk --java-options "-Xmx70g" SortSam \
+    -I "${SAMPLE}.bwa.sam" \
+    -O "${SAMPLE}.sorted.bam" \
+    -SO coordinate \
+    --CREATE_INDEX true
+
+rm -f "${SAMPLE}.bwa.sam"
+
+########################################
+# 标记重复
+########################################
+
+echo "Marking duplicates..."
+
+gatk --java-options "-Xmx70g" MarkDuplicates \
+    -I "${SAMPLE}.sorted.bam" \
+    -O "${SAMPLE}.dedup.bam" \
+    -M "${SAMPLE}.dedup.metrics.txt" \
+    -REMOVE_DUPLICATES false \
+    --TAGGING_POLICY All \
+    -MAX_FILE_HANDLES 1000
+
+rm -f "${SAMPLE}.sorted.bam" "${SAMPLE}.sorted.bai"
+
+########################################
+# 统一最终 BAM 文件名并建索引
+########################################
+
+mv "${SAMPLE}.dedup.bam" "${SAMPLE}.bam"
+
+samtools index -@ "${THREADS}" "${SAMPLE}.bam"
+
+########################################
+# 比对统计
+########################################
+
+echo "Generating mapping statistics..."
+
+samtools flagstat -@ "${THREADS}" "${SAMPLE}.bam" > "${SAMPLE}.flagstat.txt"
+
+########################################
+# 深度统计
+########################################
+
+echo "Calculating sequencing depth..."
+
+samtools depth -aa "${SAMPLE}.bam" > "${SAMPLE}.depth.txt"
+
+awk '
+{
+    sum += $3
+    total += 1
+}
+END {
+    print "Average_depth =", sum / total
+}
+' "${SAMPLE}.depth.txt" > "${SAMPLE}.average_depth.txt"
+
+########################################
+# 缺失率统计
+########################################
+
+echo "Calculating missing rate..."
+
+awk '
+{
+    total += 1
+    if ($3 == 0) missing += 1
+}
+END {
+    print "Total_sites =", total
+    print "Missing_sites =", missing
+    print "Missing_rate =", missing / total
+}
+' "${SAMPLE}.depth.txt" > "${SAMPLE}.missing_rate.txt"
+
+echo "Done."

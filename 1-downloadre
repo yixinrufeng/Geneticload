@@ -1,0 +1,52 @@
+#!/bin/bash
+set -euo pipefail
+
+########################################
+# 需要修改的变量
+########################################
+
+SPECIES="Ammospiza_maritima"
+REF_ID="GCA_013396375.1_ASM1339637v1"
+
+REF_DIR="/raid6/bird/hp/ljr/${SPECIES}/01reference"
+
+NCBI_BASE_URL="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/013/396/375/GCA_013396375.1_ASM1339637v1"
+
+########################################
+# 文件名
+########################################
+
+REF_FA_GZ="${REF_ID}_genomic.fna.gz"
+REF_FA="${REF_ID}_genomic.fna"
+
+GTF_GZ="${REF_ID}_genomic.gtf.gz"
+GTF="${REF_ID}_genomic.gtf"
+
+########################################
+# 下载和解压
+########################################
+
+mkdir -p "${REF_DIR}"
+cd "${REF_DIR}"
+
+echo "Downloading reference genome..."
+wget -c "${NCBI_BASE_URL}/${REF_FA_GZ}"
+
+echo "Downloading GTF file..."
+wget -c "${NCBI_BASE_URL}/${GTF_GZ}"
+
+echo "Decompressing reference genome..."
+if [[ ! -s "${REF_FA}" ]]; then
+    gunzip -c "${REF_FA_GZ}" > "${REF_FA}"
+fi
+
+echo "Decompressing GTF file..."
+if [[ ! -s "${GTF}" ]]; then
+    gunzip -c "${GTF_GZ}" > "${GTF}"
+fi
+
+echo "Reference genome:"
+ls -lh "${REF_FA}"
+
+echo "GTF file:"
+ls -lh "${GTF}"

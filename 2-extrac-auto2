@@ -1,0 +1,174 @@
+#!/bin/bash
+set -euo pipefail
+
+########################################
+# 需要修改的变量
+########################################
+
+SPECIES="Ammospiza_maritima"
+REF_ID="GCA_013396375.1_ASM1339637v1"
+
+REF_DIR="/raid6/bird/hp/ljr/${SPECIES}/01reference"
+BWA_PREFIX="Ama"
+
+THREADS=6
+
+REF_FA="${REF_DIR}/${REF_ID}_genomic.fna"
+
+########################################
+# Z/W 参考序列
+# 雀形目建议用斑胸草雀 Z/W
+# 非雀形目可用红原鸡 Z/W
+########################################
+
+ZW_DB_PREFIX="/raid6/bird/hp/ljr/Gallus_gallus/01reference/G.ZW"
+ZW_FASTA="/raid6/bird/hp/ljr/Gallus_gallus/01reference/Gallus.ZW.fna"
+
+########################################
+# BLAST 筛选阈值
+########################################
+
+MIN_IDENTITY=90
+MIN_ALIGN_LEN=1000
+
+########################################
+# 进入参考基因组目录
+########################################
+
+cd "${REF_DIR}"
+
+########################################
+# 检查输入文件
+########################################
+
+if [[ ! -s "${REF_FA}" ]]; then
+    echo "ERROR: Reference genome not found: ${REF_FA}"
+    exit 1
+fi
+
+if [[ ! -s "${ZW_FASTA}" ]]; then
+    echo "ERROR: ZW FASTA not found: ${ZW_FASTA}"
+    exit 1
+fi
+
+########################################
+# 第一步：目标基因组 scaffold 比对到 Z/W 数据库
+########################################
+
+echo "Step 1: BLAST target genome against Z/W database..."
+
+blastn \
+    -query "${REF_FA}" \
+    -db "${ZW_DB_PREFIX}" \
+    -out out1.target_vs_ZW.blast \
+    -outfmt 6 \
+    -evalue 1e-5 \
+    -num_threads "${THREADS}"
+
+awk -v id="${MIN_IDENTITY}" -v len="${MIN_ALIGN_LEN}" \
+    '$3 >= id && $4 >= len {print $1}' \
+    out1.target_vs_ZW.blast | sort -u > ZW1.candidate.ids.txt
+
+echo "Candidate Z/W scaffolds from first BLAST:"
+wc -l ZW1.candidate.ids.txt
+
+########################################
+# 第二步：提取候选 Z/W scaffold
+########################################
+
+echo "Extracting candidate Z/W scaffolds..."
+
+seqtk subseq "${REF_FA}" ZW1.candidate.ids.txt > ZW1.candidate.fna
+
+########################################
+# 第三步：给候选 Z/W scaffold 建 BLAST 数据库
+########################################
+
+echo "Building BLAST database for candidate Z/W scaffolds..."
+
+makeblastdb \
+    -in ZW1.candidate.fna \
+    -dbtype nucl \
+    -out ZW1.candidate.db
+
+########################################
+# 第四步：参考 Z/W 反向比对到候选 scaffold
+########################################
+
+echo "Step 2: BLAST reference Z/W sequences against candidate scaffolds..."
+
+blastn \
+    -query "${ZW_FASTA}" \
+    -db ZW1.candidate.db \
+    -out out2.ZW_vs_target_candidate.blast \
+    -outfmt 6 \
+    -evalue 1e-5 \
+    -num_threads "${THREADS}"
+
+awk -v id="${MIN_IDENTITY}" -v len="${MIN_ALIGN_LEN}" \
+    '$3 >= id && $4 >= len {print $2}' \
+    out2.ZW_vs_target_candidate.blast | sort -u > ZW.final.ids.txt
+
+echo "Final Z/W scaffold number:"
+wc -l ZW.final.ids.txt
+
+########################################
+# 第五步：提取所有 scaffold 名称
+########################################
+
+echo "Extracting all scaffold names..."
+
+grep '^>' "${REF_FA}" | awk '{print $1}' | sed 's/^>//' | sort -u > all.scaffold.ids.txt
+
+########################################
+# 第六步：从全部 scaffold 中删除 Z/W scaffold
+########################################
+
+echo "Generating autosome scaffold list..."
+
+grep -v -F -x -f ZW.final.ids.txt all.scaffold.ids.txt > auto.ids.txt
+
+echo "Autosome scaffold number:"
+wc -l auto.ids.txt
+
+########################################
+# 第七步：提取常染色体和 Z/W 序列
+########################################
+
+echo "Extracting autosomal scaffolds..."
+
+seqtk subseq "${REF_FA}" auto.ids.txt > auto.fna
+
+echo "Extracting Z/W scaffolds..."
+
+seqtk subseq "${REF_FA}" ZW.final.ids.txt > ZW.fna
+
+########################################
+# 检查序列统计
+########################################
+
+echo "Autosome FASTA statistics:"
+seqkit stats auto.fna || true
+
+echo "Z/W FASTA statistics:"
+seqkit stats ZW.fna || true
+
+########################################
+# 建立索引
+########################################
+
+echo "Building BWA-MEM2 index..."
+
+bwa-mem2 index -p "${BWA_PREFIX}" auto.fna
+
+echo "Building samtools faidx..."
+
+samtools faidx auto.fna
+
+echo "Building GATK sequence dictionary..."
+
+gatk CreateSequenceDictionary \
+    -R auto.fna \
+    -O auto.dict
+
+echo "Done."

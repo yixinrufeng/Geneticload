@@ -8,7 +8,7 @@ set -euo pipefail
 SPECIES="Ammospiza_maritima"
 REF_ID="GCA_013396375.1_ASM1339637v1"
 
-REF_DIR="/raid6/bird/hp/ljr/${SPECIES}/01reference"
+REF_DIR="/path/${SPECIES}/01reference"
 BWA_PREFIX="Ama"
 
 THREADS=6
@@ -21,8 +21,8 @@ REF_FA="${REF_DIR}/${REF_ID}_genomic.fna"
 # 非雀形目可用红原鸡 Z/W
 ########################################
 
-ZW_DB_PREFIX="/raid6/bird/hp/ljr/Gallus_gallus/01reference/G.ZW"
-ZW_FASTA="/raid6/bird/hp/ljr/Gallus_gallus/01reference/Gallus.ZW.fna"
+ZW_DB_PREFIX="/path/Gallus_gallus/01reference/G.ZW"
+ZW_FASTA="/path/Gallus_gallus/01reference/Gallus.ZW.fna"
 
 ########################################
 # BLAST 筛选阈值

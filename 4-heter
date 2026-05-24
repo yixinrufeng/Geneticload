@@ -8,8 +8,8 @@ set -euo pipefail
 SPECIES="Ammospiza_maritima"
 SAMPLE="SRR9946437"
 
-REF_DIR="/raid6/bird/hp/ljr/${SPECIES}/01reference"
-WORK_DIR="/raid6/bird/hp/ljr/${SPECIES}/02resequencing/${SAMPLE}"
+REF_DIR="/path/${SPECIES}/01reference"
+WORK_DIR="/path/${SPECIES}/02resequencing/${SAMPLE}"
 
 REF_FA="${REF_DIR}/auto.fna"
 

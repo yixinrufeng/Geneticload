@@ -8,7 +8,7 @@ set -euo pipefail
 SPECIES="Ammospiza_maritima"
 REF_ID="GCA_013396375.1_ASM1339637v1"
 
-REF_DIR="/raid6/bird/hp/ljr/${SPECIES}/01reference"
+REF_DIR="/path/${SPECIES}/01reference"
 
 NCBI_BASE_URL="https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/013/396/375/GCA_013396375.1_ASM1339637v1"
 

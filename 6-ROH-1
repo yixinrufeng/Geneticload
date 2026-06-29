@@ -1,0 +1,227 @@
+
+############################################################################################################################
+
+#Alignment_and_variant_calling&VCF_Filtration
+#!/bin/bash
+set -euo pipefail
+#对bam文件建立索引
+samtools index /raid6/bird/hp/ljr/Aquila_chrysaetos/02data/SRR26919696.bam
+REF=/raid6/bird/hp/ljr/Aquila_chrysaetos/01reference/auto.fna
+BAM=/raid6/bird/hp/ljr/Aquila_chrysaetos/02data/SRR26919696.bam
+SAMPLE=SRR26919696
+
+# 0. Prepare reference index
+if [ ! -f ${REF}.fai ]; then
+    samtools faidx ${REF}
+fi
+
+if [ ! -f ${REF%.fna}.dict ]; then
+    gatk CreateSequenceDictionary \
+      -R ${REF} \
+      -O ${REF%.fna}.dict
+fi
+
+# 1. HaplotypeCaller
+gatk --java-options "-Xmx30g" HaplotypeCaller \
+  -R ${REF} \
+  -I ${BAM} \
+  -O ${SAMPLE}.g.vcf.gz \
+  -ERC GVCF \
+  --native-pair-hmm-threads 8
+
+# 2. GenotypeGVCFs
+# 单样本可以直接 GenotypeGVCFs，不需要 CombineGVCFs
+gatk --java-options "-Xmx30g" GenotypeGVCFs \
+  -R ${REF} \
+  -V ${SAMPLE}.g.vcf.gz \
+  -O ${SAMPLE}.raw.vcf.gz
+
+# 3. Select SNPs
+gatk --java-options "-Xmx15g" SelectVariants \
+  -R ${REF} \
+  -V ${SAMPLE}.raw.vcf.gz \
+  --select-type-to-include SNP \
+  -O ${SAMPLE}.raw.snp.vcf.gz
+
+# 4. Hard filtering
+gatk --java-options "-Xmx50g" VariantFiltration \
+  -R ${REF} \
+  -V ${SAMPLE}.raw.snp.vcf.gz \
+  --filter-expression "QUAL < 30.0 || QD < 2.0 || MQ < 40.0 || FS > 60.0 || SOR > 3.0 || MQRankSum < -12.5 || ReadPosRankSum < -8.0" \
+  --filter-name "snp_filter" \
+  -O ${SAMPLE}.SNP_hardfil.vcf.gz
+
+# 5. Remove filtered sites
+gatk --java-options "-Xmx15g" SelectVariants \
+  -R ${REF} \
+  -V ${SAMPLE}.SNP_hardfil.vcf.gz \
+  --exclude-filtered true \
+  -O ${SAMPLE}.SNP_hardfil_true.vcf.gz
+
+# 6. Keep biallelic SNPs only
+bcftools view \
+  -m2 -M2 -v snps \
+  ${SAMPLE}.SNP_hardfil_true.vcf.gz \
+  -Oz \
+  -o ${SAMPLE}.SNP_hardfil_true.biallelic.snp.vcf.gz
+
+bcftools index -f ${SAMPLE}.SNP_hardfil_true.biallelic.snp.vcf.gz
+
+# 7. Depth filtering
+vcftools \
+  --gzvcf ${SAMPLE}.SNP_hardfil_true.biallelic.snp.vcf.gz \
+  --minDP 8 \
+  --maxDP 46 \
+  --max-missing 1.0 \
+  --recode \
+  --recode-INFO-all \
+  --out ${SAMPLE}_DPfiltered
+
+# 8. Compress and index
+bcftools view \
+  -v snps \
+  ${SAMPLE}_DPfiltered.recode.vcf \
+  -Oz \
+  -o ${SAMPLE}_DPfiltered_SNPs.vcf.gz
+
+bcftools index -f ${SAMPLE}_DPfiltered_SNPs.vcf.gz
+
+# 9. PL value filtering
+perl /raid6/bird/hp/ljr/filter_PLvalue.pl \
+  ${SAMPLE}_DPfiltered_SNPs.vcf.gz \
+  ${SAMPLE}.DP_PL_filtered.vcf.gz \
+  0.2 20 1
+
+##########################################################################################################################
+
+#ROH_Plink
+#查看参考基因组
+grep "^>" /raid6/bird/hp/ljr/Aegithalos_caudatus/01reference/auto.fna | head -40
+#1参考基因组为染色体级别
+#!/bin/bash
+# Rename
+echo "NC_089873.1 chr1
+NC_089874.1 chr2
+NC_089875.1 chr3
+NC_089876.1 chr4
+NC_089877.1 chr5
+NC_089878.1 chr6
+NC_089879.1 chr7
+NC_089880.1 chr8
+NC_089881.1 chr9
+NC_089882.1 chr10
+NC_089883.1 chr11
+NC_089884.1 chr12
+NC_089885.1 chr13
+NC_089886.1 chr14
+NC_089887.1 chr15
+NC_089888.1 chr16
+NC_089889.1 chr17
+NC_089890.1 chr18
+NC_089891.1 chr19
+NC_089892.1 chr20
+NC_089893.1 chr21
+NC_089894.1 chr22
+NC_089895.1 chr23
+NC_089896.1 chr24
+NC_089897.1 chr25
+NC_089898.1 chr26
+NC_089899.1 chr27
+NC_089900.1 chr28
+NC_089901.1 chr29
+NC_089902.1 chr30
+NC_089903.1 chr31
+NC_089904.1 chr32
+NC_089905.1 chr33
+NC_089906.1 chr34
+NC_089907.1 chr35
+NC_089908.1 chr36
+NC_089909.1 chr37
+NC_089910.1 chr38" > list
+
+bcftools annotate --rename-chrs list SRR32841777.DP_PL_filtered.vcf.gz -Oz -o SRR32841777.renamed.vcf.gz
+
+#step1: VCF to PLINK format
+vcftools --gzvcf SRR32841777.renamed.vcf.gz --plink --out SRR32841777_Leopard
+plink --noweb --file SRR32841777_Leopard --chr-set 38 no-xy --make-bed --out SRR32841777_Leopard
+
+plink --bfile SRR32841777_Leopard --indep-pairwise 50 1 0.8 --chr-set 38 no-xy
+plink --bfile SRR32841777_Leopard --extract plink.prune.in --make-bed --out SRR32841777_Leopard_pruned --chr-set 38 no-xy
+#plink --bfile SRR32841777_Leopard_pruned --pca 10 --chr-set 38 no-xy --threads 6
+
+plink --bfile SRR32841777_Leopard --homozyg --homozyg-window-snp 80 --homozyg-density 50 --homozyg-snp 150 --homozyg-kb 10 --chr-set 38 no-xy --out SRR32841777.roh
+
+#2参考基因组为非染色体级别
+#!/bin/bash
+# 提取长度 ≥100 kb 的 scaffold，并从 VCF 中保留这些 scaffold 上的变异位点
+set -euo pipefail
+
+# 直接用bcftools重新压缩为BGZF格式
+bcftools view SRR9853731.DP_PL_filtered.vcf.gz -Oz -o SRR9853731.DP_PL_filtered_new.vcf.gz
+
+# 替换原文件
+mv SRR9853731.DP_PL_filtered_new.vcf.gz SRR9853731.DP_PL_filtered.vcf.gz
+
+# 建立索引
+bcftools index SRR9853731.DP_PL_filtered.vcf.gz
+
+# 输入文件
+REF=/raid6/bird/hp/ljr/Aquila_chrysaetos/01reference/auto.fna
+VCF=SRR9853731.DP_PL_filtered.vcf.gz
+
+# 输出前缀
+OUT=SRR9853731.scaffold_ge100kb
+
+# 1. 如果参考基因组没有 fai 索引，先建立
+if [ ! -f ${REF}.fai ]; then
+    samtools faidx ${REF}
+fi
+
+# 2. 提取长度 >= 100 kb 的 scaffold 名称
+awk '$2 >= 100000 {print $1}' ${REF}.fai > scaffold_ge100kb.list
+
+# 3. 生成 bcftools 可识别的 region 文件
+# 格式：scaffold start end
+awk '$2 >= 100000 {print $1"\t1\t"$2}' ${REF}.fai > scaffold_ge100kb.regions
+
+# 4. 确保 VCF 有索引
+# 建议用 CSI 索引，更适合非模式物种和较长 scaffold
+if [ ! -f ${VCF}.csi ] && [ ! -f ${VCF}.tbi ]; then
+    bcftools index -f ${VCF}
+fi
+
+# 5. 从 VCF 中提取这些 scaffold 上的位点
+bcftools view \
+    -R scaffold_ge100kb.regions \
+    -Oz \
+    -o ${OUT}.vcf.gz \
+    ${VCF}
+
+# 6. 建立新 VCF 索引
+bcftools index -f ${OUT}.vcf.gz
+
+# 7. 简单统计
+echo "Number of scaffolds >=100 kb:"
+wc -l scaffold_ge100kb.list
+
+echo "Number of variants retained:"
+bcftools view -H ${OUT}.vcf.gz | wc -l
+
+# 8. VCF to PLINK format
+plink \
+  --vcf ${OUT}.vcf.gz \
+  --double-id \
+  --allow-extra-chr \
+  --make-bed \
+  --out ${OUT}
+
+# 9. ROH detection
+plink \
+  --bfile ${OUT} \
+  --homozyg \
+  --homozyg-window-snp 80 \
+  --homozyg-snp 150 \
+  --homozyg-density 50 \
+  --homozyg-kb 10 \
+  --allow-extra-chr \
+  --out SRR9853731.roh
